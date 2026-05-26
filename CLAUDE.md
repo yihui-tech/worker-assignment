@@ -22,7 +22,7 @@ A web application for two domains at Yi Hui Tech (internal tooling):
 
 | Layer | Tool |
 |---|---|
-| Frontend | Next.js 14 (App Router), Tailwind CSS, TypeScript |
+| Frontend | Next.js 16.2.6 (App Router), React 19, Tailwind CSS v4, TypeScript |
 | Database | Supabase (PostgreSQL) |
 | Auth | Supabase Auth (not yet implemented) |
 | Deployment | Vercel |
@@ -47,20 +47,22 @@ app/
   components/
     Nav.tsx              # Top navigation bar (two sections: Projects | Trips)
   page.tsx               # Home dashboard (cost summary + bin locations)
+  analytics/
+    page.tsx             # Bin swap analytics per customer site (week/month toggle)
   assignments/
     page.tsx             # Daily worker assignment page
   bins/
-    page.tsx             # Bin inventory management (CRUD + location filter)
+    page.tsx             # Bin inventory management (CRUD + type/size/location filters + days at site)
   cost/
     page.tsx             # Rolling cost dashboard per project
   customers/
-    page.tsx             # Customer management (CRUD)
+    page.tsx             # Customer management (CRUD + multi-site management)
   projects/
     page.tsx             # Project creation and management
   timesheets/
     page.tsx             # Timesheet entry per worker per project
   trips/
-    page.tsx             # Trip dispatch, bin movements, WhatsApp message generation
+    page.tsx             # Trip dispatch, bin movements, WhatsApp message generation, drag-to-reorder
   lib/
     supabase.ts          # Supabase client initialisation
   layout.tsx             # Root layout with Nav
@@ -171,29 +173,44 @@ customer_id    integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY
 name           text NOT NULL
 contact_person text
 contact_number text
-address        text                  -- used as pickup location in trips
+address        text
 created_at     timestamptz
 ```
+
+### customer_locations
+```sql
+id             integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY
+customer_id    integer REFERENCES customers(customer_id)
+name           text NOT NULL         -- site name, e.g. "Tuas Plant"
+address        text
+contact_person text
+contact_number text
+created_at     timestamptz
+```
+> One customer can have multiple named sites. Both `trips` and `bins` reference `customer_location_id` to track which specific site a pickup/bin relates to. Legacy records use `customer_id` directly (still supported).
 
 ### locations
 ```sql
 id         integer PRIMARY KEY GENERATED ALWAYS AS IDENTITY
 name       text NOT NULL
-address    text                      -- used as dropoff location in trips
+address    text                      -- used as dropoff destination in trips
 created_at timestamptz
 ```
 
 ### trips
 ```sql
-id              uuid PRIMARY KEY
-vehicle_number  text REFERENCES vehicles(plate_number)
-driver_id       text REFERENCES drivers(employee_id)
-customer_id     integer REFERENCES customers(customer_id)  -- pickup source
-dropoff_id      integer REFERENCES locations(id)           -- dropoff destination
-requester       text
-remarks         text
-status          text                 -- open | completed | cancelled
-created_at      timestamptz
+id                   uuid PRIMARY KEY
+vehicle_number       text REFERENCES vehicles(plate_number)
+driver_id            text REFERENCES drivers(employee_id)
+customer_id          integer REFERENCES customers(customer_id)       -- pickup source (customer)
+customer_location_id integer REFERENCES customer_locations(id)       -- specific site within customer (nullable)
+dropoff_id           integer REFERENCES locations(id)                -- dropoff destination (yard/location)
+requester            text
+remarks              text
+status               text            -- open | completed | cancelled
+trip_order           integer         -- display order for drag-to-reorder
+created_at           timestamptz
+completed_at         timestamptz
 ```
 
 ### trip_bins
@@ -209,16 +226,23 @@ created_at timestamptz
 
 ### bins
 ```sql
-id             uuid PRIMARY KEY
-serial_number  text UNIQUE NOT NULL  -- e.g. H1232
-customer_id    integer REFERENCES customers(customer_id)
-location_id    integer REFERENCES locations(id)
-created_at     timestamptz
+id                   uuid PRIMARY KEY
+serial_number        text UNIQUE NOT NULL  -- e.g. H1232
+customer_id          integer REFERENCES customers(customer_id)
+customer_location_id integer REFERENCES customer_locations(id)
+location_id          integer REFERENCES locations(id)
+unit_weight          numeric               -- empty bin weight in kg
+size                 text                  -- e.g. 5T, 10T
+type                 text                  -- e.g. hook, hook-open-top
+status               text                  -- active | retired
+remarks              text
+created_at           timestamptz
 ```
-Current location logic:
-- `customer_id` set → bin is at that customer site
+Current location logic (checked in priority order):
+- `customer_location_id` set → bin is at that specific customer site
+- `customer_id` set (legacy) → bin is at that customer (no specific site)
 - `location_id` set → bin is at that yard/location
-- both null → location unknown
+- all null → location unknown
 
 ### weigh_bridge
 ```sql
@@ -307,27 +331,40 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 ### /trips
 - Create and manage truck dispatch trips
-- Fields: vehicle, driver, customer (with inline "Create new customer" flow), dropoff location, requester, remarks
+- Fields: vehicle, driver, customer, customer site (optional — filtered by selected customer), dropoff location, requester, remarks
+- Customer site dropdown appears after customer is selected; shows site address/contact as preview
 - Bin movements: optionally add bins to a trip with action = `dropoff` or `pickup`
   - Auto-suggests action based on bin's current location (yard → dropoff, customer → pickup)
-- Trip list shows: vehicle, customer, dropoff, net weight breakdown per load, requester, status badge, date
+- Trip list shows: vehicle, customer (+ site name), dropoff, net weight breakdown per load, requester, status badge, date
+- Drag-to-reorder: open trips can be reordered by dragging the grip handle; order persisted via `trip_order`
 - Actions per trip:
-  - **Complete** (open trips only) — sets status to `completed`, auto-updates bin locations
+  - **Complete** (open trips only) — sets status to `completed`, records `completed_at`, auto-updates bin locations
   - **Cancel** (open trips only) — sets status to `cancelled`
-  - **Clipboard icon** — opens WhatsApp message preview modal with Copy Message button
+  - **Copy icon** — opens WhatsApp message preview modal with Copy Message button
   - **Edit icon** — opens edit modal
   - **Delete icon** — deletes trip
 
 ### /bins
 - Register and manage physical bin inventory
-- CRUD via modal (create + edit)
-- Location filter tabs: All / At Customer / At Yard / Unknown
-- Current location shown as colour-coded badge (blue = customer, green = yard, gray = unknown)
+- CRUD via modal (create + edit): serial number, type, size, unit weight, status, remarks, location
+- Filter tabs: All / At Customer / At Yard / Unknown
+- Type and size filter dropdowns (populated from existing bin values)
+- **Days at Site** column — shows how long each bin has been at its current customer location, colour-coded: green = today, gray = <7d, orange = 7–13d, red = 14+d
+- Current location shown as colour-coded badge: blue = customer site, green = yard, gray = unknown
 - Location is auto-updated when a trip containing the bin is marked complete
 
 ### /customers
-- Manage customer records: company name, contact person, contact number, address (pickup location)
-- Full CRUD with edit and delete icon buttons
+- Manage customer records: company name, contact person, contact number, address
+- Full CRUD with edit (pencil) and delete (trash) icon buttons
+- **Manage Sites** (pin icon) per customer — opens a modal to create/edit/delete `customer_locations` for that customer
+  - Each site has: name, address, contact person, contact number
+  - Sites appear as the site dropdown in the Trips form
+
+### /analytics
+- Bin swap analytics per customer site
+- Toggle between **This Week** and **This Month** views
+- Table shows: Customer, Site, number of bins swapped, with a proportional bar chart
+- Groups by `customer_location_id`; fetches completed `trip_bins` with `action = dropoff`
 
 ---
 
@@ -340,10 +377,10 @@ Date : DD/MM/YYYY
 
 Order placed by - {requester}
 
-Pick up from - {customer name}
-Pick up address - {customer address}
-Person in charge - {customer contact_person}
-Contact no. - {customer contact_number}
+Pick up from - {customer name} ({site name if site selected})
+Pick up address - {site address ?? customer address}
+Person in charge - {site contact_person ?? customer contact_person}
+Contact no. - {site contact_number ?? customer contact_number}
 
 Drop off to - {location name}
 Drop off address - {location address}
@@ -354,6 +391,8 @@ Remarks: {remarks}
 Bin drop off - {serial_number}   ← repeated per bin with action=dropoff
 Bin pick up - {serial_number}    ← repeated per bin with action=pickup
 ```
+> When a `customer_location_id` is set on the trip, the site's address and contacts take precedence over the customer-level fields. The pickup name is formatted as `Customer Name (Site Name)`.
+
 
 ---
 
@@ -377,10 +416,12 @@ Bin pick up - {serial_number}    ← repeated per bin with action=pickup
 - RLS is enabled — always test queries in context of the correct user role
 
 ### UI Patterns
-- Edit and delete actions always use SVG icon buttons, never text links
-  - Edit: pencil icon, `hover:text-blue-600 hover:bg-blue-50`
-  - Delete: trash icon, `hover:text-red-600 hover:bg-red-50`
-  - Both: `p-1.5 text-gray-400 rounded` base class, `width="14" height="14"`
+- Icons: use `lucide-react` components — do not write inline SVGs
+  - Edit: `<Pencil size={14} />`, button class `hover:text-blue-600 hover:bg-blue-50`
+  - Delete: `<Trash2 size={14} />`, button class `hover:text-red-600 hover:bg-red-50`
+  - History/time: `<Clock size={14} />`, button class `hover:text-purple-600 hover:bg-purple-50`
+  - All icon buttons: base class `p-1.5 text-gray-400 rounded`
+- Nav section icons: `<FolderKanban>` for Projects, `<Truck>` for Trips
 
 ---
 
