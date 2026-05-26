@@ -172,13 +172,13 @@ Project total = SUM of all timesheet entry costs where project_id matches
 
   Order placed by - {requester}
 
-  Collect from - {customer name}
-  Collection address - {customer address}
+  Pick up from - {customer name}
+  Pick up address - {customer address}
   Person in charge - {customer contact person}
   Contact no. - {customer contact number}
 
-  Sent to - {location name}
-  Address - {location address}
+  Drop off to - {location name}
+  Drop off address - {location address}
   Person in charge -
   Contact no. -
 

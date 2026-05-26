@@ -2,6 +2,22 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import {
+  DndContext,
+  DragEndEvent,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 type Trip = {
   id: string;
@@ -12,6 +28,7 @@ type Trip = {
   requester: string | null;
   remarks: string | null;
   status: string;
+  trip_order: number | null;
   created_at: string;
   customers: { name: string; address: string | null; contact_person: string | null; contact_number: string | null } | null;
   locations: { name: string; address: string | null } | null;
@@ -37,6 +54,128 @@ const emptyForm = {
 
 const emptyCustomerForm = { name: '', contact_person: '', contact_number: '', address: '' };
 
+const statusBadge = (status: string) => {
+  const styles: Record<string, string> = {
+    open: 'bg-yellow-100 text-yellow-800',
+    completed: 'bg-green-100 text-green-800',
+    cancelled: 'bg-gray-100 text-gray-600',
+  };
+  return `px-2 py-1 rounded text-xs font-medium ${styles[status] ?? 'bg-gray-100 text-gray-800'}`;
+};
+
+const formatDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' });
+
+const totalNetWeight = (trip: Trip) =>
+  trip.weigh_bridge.reduce((sum, w) => sum + w.net_weight, 0);
+
+type TripRowHandlers = {
+  onMarkComplete: (id: string) => void;
+  onCancel: (id: string) => void;
+  onEdit: (trip: Trip) => void;
+  onDelete: (id: string) => void;
+  onPreview: (trip: Trip) => void;
+};
+
+function SortableTripRow({
+  trip,
+  canReorder,
+  handlers,
+}: {
+  trip: Trip;
+  canReorder: boolean;
+  handlers: TripRowHandlers;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: trip.id,
+    disabled: !canReorder,
+  });
+
+  const netWeight = totalNetWeight(trip);
+
+  return (
+    <tr
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
+      className="border-b last:border-0 hover:bg-gray-50"
+    >
+      <td className="px-2 py-3 w-8 text-center">
+        {canReorder ? (
+          <button
+            {...attributes}
+            {...listeners}
+            className="cursor-grab p-1 text-gray-300 hover:text-gray-500 touch-none"
+            title="Drag to reorder"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="9" cy="5" r="1.5"/><circle cx="15" cy="5" r="1.5"/>
+              <circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/>
+              <circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="19" r="1.5"/>
+            </svg>
+          </button>
+        ) : (
+          <span className="block w-4" />
+        )}
+      </td>
+      <td className="px-4 py-3 font-medium">{trip.vehicle_number}</td>
+      <td className="px-4 py-3 text-gray-600">{trip.customers?.name ?? '—'}</td>
+      <td className="px-4 py-3 text-gray-600">{trip.locations?.name ?? '—'}</td>
+      <td className="px-4 py-3">
+        {trip.weigh_bridge.length === 0 ? (
+          <span className="text-gray-400">—</span>
+        ) : trip.weigh_bridge.length === 1 ? (
+          <span className="text-gray-700 text-sm">{trip.weigh_bridge[0].net_weight.toFixed(3)} kg</span>
+        ) : (
+          <div className="text-xs space-y-0.5">
+            {trip.weigh_bridge.map((w, i) => (
+              <div key={i} className="text-gray-500">Load {i + 1}: {w.net_weight.toFixed(3)} kg</div>
+            ))}
+            <div className="font-semibold text-gray-800 border-t pt-0.5 mt-0.5">{netWeight.toFixed(3)} kg</div>
+          </div>
+        )}
+      </td>
+      <td className="px-4 py-3 text-gray-600">{trip.requester ?? '—'}</td>
+      <td className="px-4 py-3">
+        <span className={statusBadge(trip.status)}>{trip.status}</span>
+      </td>
+      <td className="px-4 py-3 text-gray-500 text-xs">{formatDate(trip.created_at)}</td>
+      <td className="px-4 py-3">
+        <div className="flex items-center justify-end gap-3">
+          {trip.status === 'open' && (
+            <div className="flex gap-1.5">
+              <button onClick={() => handlers.onMarkComplete(trip.id)} className="px-2.5 py-1 text-xs font-medium bg-green-100 text-green-700 rounded hover:bg-green-200">
+                Complete
+              </button>
+              <button onClick={() => handlers.onCancel(trip.id)} className="px-2.5 py-1 text-xs font-medium bg-orange-100 text-orange-700 rounded hover:bg-orange-200">
+                Cancel
+              </button>
+            </div>
+          )}
+          <div className="flex gap-0.5">
+            <button onClick={() => handlers.onPreview(trip)} title="Preview WhatsApp message" className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+            <button onClick={() => handlers.onEdit(trip)} title="Edit" className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+              </svg>
+            </button>
+            <button onClick={() => handlers.onDelete(trip.id)} title="Delete" className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                <path d="M10 11v6"/><path d="M14 11v6"/>
+                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 export default function TripsPage() {
   const [trips, setTrips] = useState<Trip[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -58,10 +197,18 @@ export default function TripsPage() {
   const [newCustomerForm, setNewCustomerForm] = useState(emptyCustomerForm);
   const [savingCustomer, setSavingCustomer] = useState(false);
 
+  const [driverFilter, setDriverFilter] = useState('');
+  const [dateFilter, setDateFilter] = useState('');
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(TouchSensor),
+  );
+
   const fetchTrips = async () => {
     const { data } = await supabase
       .from('trips')
-      .select('id, vehicle_number, driver_id, customer_id, dropoff_id, requester, remarks, status, created_at, customers(name, address, contact_person, contact_number), locations(name, address), weigh_bridge(net_weight), trip_bins(id, bin_id, action, bins(serial_number))')
+      .select('id, vehicle_number, driver_id, customer_id, dropoff_id, requester, remarks, status, trip_order, created_at, customers(name, address, contact_person, contact_number), locations(name, address), weigh_bridge(net_weight), trip_bins(id, bin_id, action, bins(serial_number))')
       .order('created_at', { ascending: false });
     if (data) setTrips(data as unknown as Trip[]);
   };
@@ -85,6 +232,43 @@ export default function TripsPage() {
     fetchTrips();
     fetchLookups();
   }, []);
+
+  const canReorder = !!driverFilter && !!dateFilter;
+
+  const filteredTrips = trips
+    .filter(t => {
+      if (driverFilter && t.driver_id !== driverFilter) return false;
+      if (dateFilter && t.created_at.slice(0, 10) !== dateFilter) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      if (canReorder) {
+        if (a.trip_order != null && b.trip_order != null) return a.trip_order - b.trip_order;
+        if (a.trip_order != null) return -1;
+        if (b.trip_order != null) return 1;
+      }
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = filteredTrips.findIndex(t => t.id === active.id);
+    const newIndex = filteredTrips.findIndex(t => t.id === over.id);
+    const reordered = arrayMove(filteredTrips, oldIndex, newIndex);
+
+    // Optimistic update
+    const reorderMap = new Map(reordered.map((t, i) => [t.id, i + 1]));
+    setTrips(prev => prev.map(t => reorderMap.has(t.id) ? { ...t, trip_order: reorderMap.get(t.id)! } : t));
+
+    // Persist
+    await Promise.all(
+      reordered.map((trip, index) =>
+        supabase.from('trips').update({ trip_order: index + 1 }).eq('id', trip.id)
+      )
+    );
+  };
 
   const selectedCustomerAddress = customerOptions.find(c => String(c.customer_id) === form.customer_id)?.address ?? '';
   const selectedDropoffAddress = locationOptions.find(l => String(l.id) === form.dropoff_id)?.address ?? '';
@@ -192,7 +376,7 @@ export default function TripsPage() {
   const handleMarkComplete = async (id: string) => {
     const trip = trips.find(t => t.id === id);
     if (!trip) return;
-    const { error } = await supabase.from('trips').update({ status: 'completed' }).eq('id', id);
+    const { error } = await supabase.from('trips').update({ status: 'completed', completed_at: new Date().toISOString() }).eq('id', id);
     if (error) { alert('Error updating trip: ' + error.message); return; }
 
     for (const tb of trip.trip_bins) {
@@ -225,18 +409,6 @@ export default function TripsPage() {
     else alert('Error deleting trip: ' + error.message);
   };
 
-  const statusBadge = (status: string) => {
-    const styles: Record<string, string> = {
-      open: 'bg-yellow-100 text-yellow-800',
-      completed: 'bg-green-100 text-green-800',
-      cancelled: 'bg-gray-100 text-gray-600',
-    };
-    return `px-2 py-1 rounded text-xs font-medium ${styles[status] ?? 'bg-gray-100 text-gray-800'}`;
-  };
-
-  const formatDate = (iso: string) =>
-    new Date(iso).toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric' });
-
   const generateMessage = (t: Trip) => {
     const date = new Date(t.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
     const lines = [
@@ -244,13 +416,13 @@ export default function TripsPage() {
       ``,
       `Order placed by - ${t.requester ?? ''}`,
       ``,
-      `Collect from - ${t.customers?.name ?? ''}`,
-      `Collection address - ${t.customers?.address ?? ''}`,
+      `Pick up from - ${t.customers?.name ?? ''}`,
+      `Pick up address - ${t.customers?.address ?? ''}`,
       `Person in charge - ${t.customers?.contact_person ?? ''}`,
       `Contact no. - ${t.customers?.contact_number ?? ''}`,
       ``,
-      `Sent to - ${t.locations?.name ?? ''}`,
-      `Address - ${t.locations?.address ?? ''}`,
+      `Drop off to - ${t.locations?.name ?? ''}`,
+      `Drop off address - ${t.locations?.address ?? ''}`,
       `Person in charge - `,
       `Contact no. - `,
       ``,
@@ -272,104 +444,100 @@ export default function TripsPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const totalNetWeight = (trip: Trip) =>
-    trip.weigh_bridge.reduce((sum, w) => sum + w.net_weight, 0);
+  const rowHandlers: TripRowHandlers = {
+    onMarkComplete: handleMarkComplete,
+    onCancel: handleCancel,
+    onEdit: openEdit,
+    onDelete: handleDelete,
+    onPreview: (trip) => { setPreviewTrip(trip); setCopied(false); },
+  };
 
   return (
     <main className="max-w-7xl mx-auto p-8 bg-white text-gray-900 min-h-screen">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold">Trips</h1>
         <button onClick={openCreate} className="bg-blue-600 text-white px-4 py-2 rounded font-medium hover:bg-blue-700">
           + New Trip
         </button>
       </div>
 
-      <div className="bg-white border rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b">
-            <tr>
-              <th className="text-left px-4 py-3 font-medium">Vehicle</th>
-              <th className="text-left px-4 py-3 font-medium">Customer</th>
-              <th className="text-left px-4 py-3 font-medium">Dropoff</th>
-              <th className="text-left px-4 py-3 font-medium">Net Weight</th>
-              <th className="text-left px-4 py-3 font-medium">Requester</th>
-              <th className="text-left px-4 py-3 font-medium">Status</th>
-              <th className="text-left px-4 py-3 font-medium">Date</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {trips.length === 0 && (
-              <tr>
-                <td colSpan={8} className="text-center px-4 py-6 text-gray-400">No trips yet</td>
-              </tr>
-            )}
-            {trips.map(t => {
-              const netWeight = totalNetWeight(t);
-              return (
-                <tr key={t.id} className="border-b last:border-0 hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium">{t.vehicle_number}</td>
-                  <td className="px-4 py-3 text-gray-600">{t.customers?.name ?? '—'}</td>
-                  <td className="px-4 py-3 text-gray-600">{t.locations?.name ?? '—'}</td>
-                  <td className="px-4 py-3">
-                    {t.weigh_bridge.length === 0 ? (
-                      <span className="text-gray-400">—</span>
-                    ) : t.weigh_bridge.length === 1 ? (
-                      <span className="text-gray-700 text-sm">{t.weigh_bridge[0].net_weight.toFixed(3)} kg</span>
-                    ) : (
-                      <div className="text-xs space-y-0.5">
-                        {t.weigh_bridge.map((w, i) => (
-                          <div key={i} className="text-gray-500">Load {i + 1}: {w.net_weight.toFixed(3)} kg</div>
-                        ))}
-                        <div className="font-semibold text-gray-800 border-t pt-0.5 mt-0.5">{netWeight.toFixed(3)} kg</div>
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{t.requester ?? '—'}</td>
-                  <td className="px-4 py-3">
-                    <span className={statusBadge(t.status)}>{t.status}</span>
-                  </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{formatDate(t.created_at)}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-3">
-                      {t.status === 'open' && (
-                        <div className="flex gap-1.5">
-                          <button onClick={() => handleMarkComplete(t.id)} className="px-2.5 py-1 text-xs font-medium bg-green-100 text-green-700 rounded hover:bg-green-200">
-                            Complete
-                          </button>
-                          <button onClick={() => handleCancel(t.id)} className="px-2.5 py-1 text-xs font-medium bg-orange-100 text-orange-700 rounded hover:bg-orange-200">
-                            Cancel
-                          </button>
-                        </div>
-                      )}
-                      <div className="flex gap-0.5">
-                        <button onClick={() => { setPreviewTrip(t); setCopied(false); }} title="Preview WhatsApp message" className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                        </button>
-                        <button onClick={() => openEdit(t)} title="Edit" className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                          </svg>
-                        </button>
-                        <button onClick={() => handleDelete(t.id)} title="Delete" className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded">
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="3 6 5 6 21 6"/>
-                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                            <path d="M10 11v6"/><path d="M14 11v6"/>
-                            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* Filters */}
+      <div className="flex items-end gap-3 mb-5">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Driver</label>
+          <select
+            value={driverFilter}
+            onChange={e => setDriverFilter(e.target.value)}
+            className="border rounded px-3 py-2 text-sm min-w-[180px]"
+          >
+            <option value="">All drivers</option>
+            {drivers.map(d => <option key={d.employee_id} value={d.employee_id}>{d.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Date</label>
+          <input
+            type="date"
+            value={dateFilter}
+            onChange={e => setDateFilter(e.target.value)}
+            className="border rounded px-3 py-2 text-sm"
+          />
+        </div>
+        {(driverFilter || dateFilter) && (
+          <button
+            onClick={() => { setDriverFilter(''); setDateFilter(''); }}
+            className="text-sm text-gray-400 hover:text-gray-600 pb-2"
+          >
+            Clear
+          </button>
+        )}
+        {canReorder && (
+          <span className="text-xs text-blue-600 font-medium pb-2.5">
+            ↕ Drag rows to set trip sequence
+          </span>
+        )}
       </div>
 
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b">
+              <tr>
+                <th className="px-2 py-3 w-8"></th>
+                <th className="text-left px-4 py-3 font-medium">Vehicle</th>
+                <th className="text-left px-4 py-3 font-medium">Customer</th>
+                <th className="text-left px-4 py-3 font-medium">Drop off</th>
+                <th className="text-left px-4 py-3 font-medium">Net Weight</th>
+                <th className="text-left px-4 py-3 font-medium">Requester</th>
+                <th className="text-left px-4 py-3 font-medium">Status</th>
+                <th className="text-left px-4 py-3 font-medium">Date</th>
+                <th className="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <SortableContext items={filteredTrips.map(t => t.id)} strategy={verticalListSortingStrategy}>
+              <tbody>
+                {filteredTrips.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="text-center px-4 py-6 text-gray-400">
+                      {trips.length === 0 ? 'No trips yet' : 'No trips match filters'}
+                    </td>
+                  </tr>
+                )}
+                {filteredTrips.map(t => (
+                  <SortableTripRow
+                    key={t.id}
+                    trip={t}
+                    canReorder={canReorder}
+                    handlers={rowHandlers}
+                  />
+                ))}
+              </tbody>
+            </SortableContext>
+          </table>
+        </div>
+      </DndContext>
+
+      {/* Trip create/edit modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
@@ -407,7 +575,7 @@ export default function TripsPage() {
 
                 {!showNewCustomer && selectedCustomerAddress && (
                   <div className="mt-2 px-3 py-2 bg-gray-50 border rounded text-sm text-gray-600">
-                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wide mr-2">Pickup</span>
+                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wide mr-2">Pick up address</span>
                     {selectedCustomerAddress}
                   </div>
                 )}
@@ -420,7 +588,7 @@ export default function TripsPage() {
                       <input value={newCustomerForm.name} onChange={e => setNewCustomerForm(prev => ({ ...prev, name: e.target.value }))} className="w-full border rounded px-3 py-2 bg-white" />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium mb-1">Address (Pickup Location)</label>
+                      <label className="block text-sm font-medium mb-1">Pick up address</label>
                       <input value={newCustomerForm.address} onChange={e => setNewCustomerForm(prev => ({ ...prev, address: e.target.value }))} className="w-full border rounded px-3 py-2 bg-white" />
                     </div>
                     <div>
@@ -444,15 +612,15 @@ export default function TripsPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1">Dropoff Location</label>
+                <label className="block text-sm font-medium mb-1">Drop off location</label>
                 <select name="dropoff_id" value={form.dropoff_id} onChange={handleChange} className="w-full border rounded px-3 py-2">
-                  <option value="">— No dropoff —</option>
+                  <option value="">— No drop off —</option>
                   {locationOptions.map(l => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
                 </select>
 
                 {selectedDropoffAddress && (
                   <div className="mt-2 px-3 py-2 bg-gray-50 border rounded text-sm text-gray-600">
-                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wide mr-2">Address</span>
+                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wide mr-2">Drop off address</span>
                     {selectedDropoffAddress}
                   </div>
                 )}
@@ -525,6 +693,7 @@ export default function TripsPage() {
         </div>
       )}
 
+      {/* WhatsApp message preview modal */}
       {previewTrip && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-full max-w-md">

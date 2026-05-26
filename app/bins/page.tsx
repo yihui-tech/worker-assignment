@@ -9,18 +9,36 @@ type Bin = {
   customer_id: number | null;
   location_id: number | null;
   created_at: string;
+  type: string | null;
+  size: string | null;
   customers: { name: string } | null;
   locations: { name: string } | null;
 };
 
 type CustomerOption = { customer_id: number; name: string };
 type LocationOption = { id: number; name: string };
+type DriverOption = { employee_id: string; name: string };
 
 type BinForm = {
   serial_number: string;
   locationType: '' | 'customer' | 'location';
   customer_id: string;
   location_id: string;
+  type: string;
+  size: string;
+};
+
+type BinHistoryEntry = {
+  id: string;
+  action: 'pickup' | 'dropoff';
+  trips: {
+    id: string;
+    vehicle_number: string;
+    completed_at: string | null;
+    driver_id: string | null;
+    customers: { name: string } | null;
+    locations: { name: string } | null;
+  } | null;
 };
 
 const emptyForm: BinForm = {
@@ -28,6 +46,8 @@ const emptyForm: BinForm = {
   locationType: '',
   customer_id: '',
   location_id: '',
+  type: '',
+  size: '',
 };
 
 function binToForm(bin: Bin): BinForm {
@@ -36,6 +56,8 @@ function binToForm(bin: Bin): BinForm {
     locationType: bin.customer_id ? 'customer' : bin.location_id ? 'location' : '',
     customer_id: bin.customer_id ? String(bin.customer_id) : '',
     location_id: bin.location_id ? String(bin.location_id) : '',
+    type: bin.type ?? '',
+    size: bin.size ?? '',
   };
 }
 
@@ -44,6 +66,8 @@ function formToPayload(form: BinForm) {
     serial_number: form.serial_number,
     customer_id: form.locationType === 'customer' && form.customer_id ? parseInt(form.customer_id, 10) : null,
     location_id: form.locationType === 'location' && form.location_id ? parseInt(form.location_id, 10) : null,
+    type: form.type || null,
+    size: form.size || null,
   };
 }
 
@@ -51,28 +75,37 @@ export default function BinsPage() {
   const [bins, setBins] = useState<Bin[]>([]);
   const [customerOptions, setCustomerOptions] = useState<CustomerOption[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
+  const [driverOptions, setDriverOptions] = useState<DriverOption[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingBin, setEditingBin] = useState<Bin | null>(null);
   const [form, setForm] = useState<BinForm>(emptyForm);
   const [loading, setLoading] = useState(false);
   const [locationFilter, setLocationFilter] = useState<'all' | 'customer' | 'yard' | 'unknown'>('all');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [sizeFilter, setSizeFilter] = useState('');
+
+  const [historyBin, setHistoryBin] = useState<Bin | null>(null);
+  const [history, setHistory] = useState<BinHistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const fetchBins = async () => {
     const { data } = await supabase
       .from('bins')
-      .select('id, serial_number, customer_id, location_id, created_at, customers(name), locations(name)')
+      .select('id, serial_number, customer_id, location_id, created_at, type, size, customers(name), locations(name)')
       .order('serial_number');
     if (data) setBins(data as unknown as Bin[]);
   };
 
   useEffect(() => {
     const fetchLookups = async () => {
-      const [c, l] = await Promise.all([
+      const [c, l, d] = await Promise.all([
         supabase.from('customers').select('customer_id, name').order('name'),
         supabase.from('locations').select('id, name').order('name'),
+        supabase.from('drivers').select('employee_id, name').order('name'),
       ]);
       if (c.data) setCustomerOptions(c.data);
       if (l.data) setLocationOptions(l.data);
+      if (d.data) setDriverOptions(d.data);
     };
     fetchBins();
     fetchLookups();
@@ -88,6 +121,19 @@ export default function BinsPage() {
     setForm(binToForm(bin));
     setEditingBin(bin);
     setShowModal(true);
+  };
+
+  const openHistory = async (bin: Bin) => {
+    setHistoryBin(bin);
+    setHistory([]);
+    setHistoryLoading(true);
+    const { data } = await supabase
+      .from('trip_bins')
+      .select('id, action, trips(id, vehicle_number, completed_at, driver_id, customers(name), locations(name))')
+      .eq('bin_id', bin.id)
+      .order('created_at', { ascending: false });
+    setHistoryLoading(false);
+    if (data) setHistory(data as unknown as BinHistoryEntry[]);
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -121,10 +167,15 @@ export default function BinsPage() {
     else alert('Error deleting bin: ' + error.message);
   };
 
+  const typeOptions = Array.from(new Set(bins.map(b => b.type).filter(Boolean))) as string[];
+  const sizeOptions = Array.from(new Set(bins.map(b => b.size).filter(Boolean))) as string[];
+
   const filteredBins = bins.filter(bin => {
-    if (locationFilter === 'customer') return !!bin.customer_id;
-    if (locationFilter === 'yard') return !!bin.location_id;
-    if (locationFilter === 'unknown') return !bin.customer_id && !bin.location_id;
+    if (locationFilter === 'customer' && !bin.customer_id) return false;
+    if (locationFilter === 'yard' && !bin.location_id) return false;
+    if (locationFilter === 'unknown' && (bin.customer_id || bin.location_id)) return false;
+    if (typeFilter && bin.type !== typeFilter) return false;
+    if (sizeFilter && bin.size !== sizeFilter) return false;
     return true;
   });
 
@@ -132,6 +183,14 @@ export default function BinsPage() {
     if (bin.customers) return { label: 'At customer', value: bin.customers.name, color: 'text-blue-700 bg-blue-50' };
     if (bin.locations) return { label: 'At yard', value: bin.locations.name, color: 'text-green-700 bg-green-50' };
     return { label: 'Unknown', value: '—', color: 'text-gray-500 bg-gray-50' };
+  };
+
+  const formatDate = (iso: string | null) => {
+    if (!iso) return '—';
+    return new Date(iso).toLocaleString('en-SG', {
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
   };
 
   return (
@@ -143,16 +202,40 @@ export default function BinsPage() {
         </button>
       </div>
 
-      <div className="flex border rounded overflow-hidden w-fit mb-6">
-        {([['all', 'All'], ['customer', 'At Customer'], ['yard', 'At Yard'], ['unknown', 'Unknown']] as const).map(([val, label]) => (
-          <button
-            key={val}
-            onClick={() => setLocationFilter(val)}
-            className={`px-4 py-2 text-sm font-medium ${locationFilter === val ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}
+      <div className="flex flex-wrap items-center gap-3 mb-6">
+        <div className="flex border rounded overflow-hidden">
+          {([['all', 'All'], ['customer', 'At Customer'], ['yard', 'At Yard'], ['unknown', 'Unknown']] as const).map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => setLocationFilter(val)}
+              className={`px-4 py-2 text-sm font-medium ${locationFilter === val ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {typeOptions.length > 0 && (
+          <select
+            value={typeFilter}
+            onChange={e => setTypeFilter(e.target.value)}
+            className="border rounded px-3 py-2 text-sm text-gray-700"
           >
-            {label}
-          </button>
-        ))}
+            <option value="">All Types</option>
+            {typeOptions.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        )}
+
+        {sizeOptions.length > 0 && (
+          <select
+            value={sizeFilter}
+            onChange={e => setSizeFilter(e.target.value)}
+            className="border rounded px-3 py-2 text-sm text-gray-700"
+          >
+            <option value="">All Sizes</option>
+            {sizeOptions.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
       </div>
 
       <div className="bg-white border rounded-lg overflow-hidden">
@@ -160,6 +243,8 @@ export default function BinsPage() {
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-medium">Serial Number</th>
+              <th className="text-left px-4 py-3 font-medium">Type</th>
+              <th className="text-left px-4 py-3 font-medium">Size</th>
               <th className="text-left px-4 py-3 font-medium">Current Location</th>
               <th className="px-4 py-3"></th>
             </tr>
@@ -167,7 +252,7 @@ export default function BinsPage() {
           <tbody>
             {filteredBins.length === 0 && (
               <tr>
-                <td colSpan={3} className="text-center px-4 py-6 text-gray-400">
+                <td colSpan={5} className="text-center px-4 py-6 text-gray-400">
                   {bins.length === 0 ? 'No bins registered' : 'No bins match this filter'}
                 </td>
               </tr>
@@ -177,6 +262,8 @@ export default function BinsPage() {
               return (
                 <tr key={bin.id} className="border-b last:border-0 hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium">{bin.serial_number}</td>
+                  <td className="px-4 py-3 text-gray-600">{bin.type ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">{bin.size ?? '—'}</td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium ${loc.color}`}>
                       <span className="text-gray-400 font-normal">{loc.label}:</span>
@@ -184,6 +271,9 @@ export default function BinsPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <button onClick={() => openHistory(bin)} title="History" className="p-1.5 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded mr-1">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    </button>
                     <button onClick={() => openEdit(bin)} title="Edit" className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded">
                       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     </button>
@@ -198,6 +288,72 @@ export default function BinsPage() {
         </table>
       </div>
 
+      {/* History modal */}
+      {historyBin && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-lg max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Bin {historyBin.serial_number} — Swap History</h2>
+              <button onClick={() => setHistoryBin(null)} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            </div>
+
+            {historyLoading && <p className="text-sm text-gray-400 py-4 text-center">Loading…</p>}
+
+            {!historyLoading && history.length === 0 && (
+              <p className="text-sm text-gray-400 py-4 text-center">No completed trips recorded for this bin.</p>
+            )}
+
+            {!historyLoading && history.length > 0 && (
+              <div className="overflow-y-auto flex-1 -mx-1 px-1">
+                <div className="relative">
+                  {/* Timeline line */}
+                  <div className="absolute left-3 top-2 bottom-2 w-px bg-gray-200" />
+
+                  <div className="space-y-4">
+                    {history.map(entry => (
+                      <div key={entry.id} className="flex gap-4">
+                        {/* Dot */}
+                        <div className={`mt-1 w-6 h-6 rounded-full flex items-center justify-center shrink-0 z-10 text-xs font-bold ${
+                          entry.action === 'dropoff' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                        }`}>
+                          {entry.action === 'dropoff' ? '↓' : '↑'}
+                        </div>
+
+                        <div className="flex-1 border rounded-lg px-3 py-2.5 text-sm bg-white">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                              entry.action === 'dropoff' ? 'bg-blue-50 text-blue-700' : 'bg-orange-50 text-orange-700'
+                            }`}>
+                              {entry.action === 'dropoff' ? 'Drop off at customer' : 'Pick up from customer'}
+                            </span>
+                            <span className="text-xs text-gray-400">{formatDate(entry.trips?.completed_at ?? null)}</span>
+                          </div>
+                          <div className="text-gray-700 space-y-0.5 mt-1.5">
+                            {entry.trips?.customers && (
+                              <div><span className="text-gray-400">Customer:</span> {entry.trips.customers.name}</div>
+                            )}
+                            {entry.trips?.locations && (
+                              <div><span className="text-gray-400">Dropoff:</span> {entry.trips.locations.name}</div>
+                            )}
+                            {entry.trips?.driver_id && (
+                              <div><span className="text-gray-400">Driver:</span> {driverOptions.find(d => d.employee_id === entry.trips!.driver_id)?.name ?? entry.trips.driver_id}</div>
+                            )}
+                            {entry.trips?.vehicle_number && (
+                              <div><span className="text-gray-400">Vehicle:</span> {entry.trips.vehicle_number}</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Create / Edit modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 w-full max-w-md">
@@ -213,6 +369,29 @@ export default function BinsPage() {
                   placeholder="e.g. H1232"
                   className="w-full border rounded px-3 py-2"
                 />
+              </div>
+
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium mb-1">Type</label>
+                  <input
+                    name="type"
+                    value={form.type}
+                    onChange={handleChange}
+                    placeholder="e.g. Skip, Hookbin"
+                    className="w-full border rounded px-3 py-2"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium mb-1">Size</label>
+                  <input
+                    name="size"
+                    value={form.size}
+                    onChange={handleChange}
+                    placeholder="e.g. 5m³, 10m³"
+                    className="w-full border rounded px-3 py-2"
+                  />
+                </div>
               </div>
 
               <div>

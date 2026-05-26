@@ -340,13 +340,13 @@ Date : DD/MM/YYYY
 
 Order placed by - {requester}
 
-Collect from - {customer name}
-Collection address - {customer address}
+Pick up from - {customer name}
+Pick up address - {customer address}
 Person in charge - {customer contact_person}
 Contact no. - {customer contact_number}
 
-Sent to - {location name}
-Address - {location address}
+Drop off to - {location name}
+Drop off address - {location address}
 Person in charge -
 Contact no. -
 
