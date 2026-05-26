@@ -109,7 +109,7 @@ export default function BinsPage() {
 
     // For bins currently at a customer, look up the most recent completed dropoff
     const customerBinIds = rawBins.filter(b => b.customer_location_id || b.customer_id).map(b => b.id);
-    let lastDropoffMap: Record<string, string> = {};
+    const lastDropoffMap: Record<string, string> = {};
     if (customerBinIds.length > 0) {
       const { data: dropoffs } = await supabase
         .from('trip_bins')
