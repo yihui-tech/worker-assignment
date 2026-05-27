@@ -15,10 +15,14 @@ type Bin = {
   id: string;
   serial_number: string;
   customer_id: number | null;
+  customer_location_id: number | null;
   location_id: number | null;
   customers: { name: string } | null;
+  customer_locations: { name: string } | null;
   locations: { name: string } | null;
 };
+
+const PAGE_SIZE = 10;
 
 const getWorkingDays = (year: number, month: number): number => {
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -31,6 +35,60 @@ const getWorkingDays = (year: number, month: number): number => {
   }
   return weekdays + saturdays * 0.5;
 };
+
+function BinSection({
+  bins,
+  headerClass,
+  labelClass,
+  label,
+}: {
+  bins: Bin[];
+  headerClass: string;
+  labelClass: string;
+  label: string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? bins : bins.slice(0, PAGE_SIZE);
+  const remaining = bins.length - PAGE_SIZE;
+
+  const locationLabel = (bin: Bin) => {
+    if (bin.customer_locations) return bin.customer_locations.name;
+    if (bin.customers) return bin.customers.name;
+    if (bin.locations) return bin.locations.name;
+    return '—';
+  };
+
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      <div className={`px-4 py-2 border-b flex items-center justify-between ${headerClass}`}>
+        <span className={`text-xs font-semibold uppercase tracking-wide ${labelClass}`}>{label}</span>
+        <span className={`text-xs ${labelClass} opacity-70`}>{bins.length}</span>
+      </div>
+      {visible.map(bin => (
+        <div key={bin.id} className="flex items-center justify-between px-4 py-2.5 border-b last:border-0 hover:bg-gray-50">
+          <span className="font-medium text-sm">{bin.serial_number}</span>
+          <span className="text-xs text-gray-500">{locationLabel(bin)}</span>
+        </div>
+      ))}
+      {!showAll && remaining > 0 && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="w-full px-4 py-2 text-xs text-blue-600 hover:bg-blue-50 text-left"
+        >
+          Show {remaining} more
+        </button>
+      )}
+      {showAll && bins.length > PAGE_SIZE && (
+        <button
+          onClick={() => setShowAll(false)}
+          className="w-full px-4 py-2 text-xs text-gray-400 hover:bg-gray-50 text-left"
+        >
+          Show less
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function HomePage() {
   const [projectCosts, setProjectCosts] = useState<ProjectCost[]>([]);
@@ -61,7 +119,7 @@ export default function HomePage() {
         supabase.from('projects').select('id, name, status').eq('status', 'active').order('name'),
         supabase.from('timesheets').select('project_id, worker_id, regular_hours, ot_15_hours, ot_20_hours').gte('date', startDate).lte('date', endDate),
         supabase.from('workers').select('employee_id, monthly_rate'),
-        supabase.from('bins').select('id, serial_number, customer_id, location_id, customers(name), locations(name)').order('serial_number'),
+        supabase.from('bins').select('id, serial_number, customer_id, customer_location_id, location_id, customers(name), customer_locations(name), locations(name)').order('serial_number'),
       ]);
 
       if (projects && timesheets && workers) {
@@ -97,15 +155,9 @@ export default function HomePage() {
     fetchData();
   }, []);
 
-  const binLocation = (bin: Bin) => {
-    if (bin.customers) return { label: bin.customers.name, type: 'customer' as const };
-    if (bin.locations) return { label: bin.locations.name, type: 'yard' as const };
-    return { label: 'Unknown', type: 'unknown' as const };
-  };
-
-  const binsAtCustomer = bins.filter(b => b.customer_id);
-  const binsAtYard = bins.filter(b => b.location_id);
-  const binsUnknown = bins.filter(b => !b.customer_id && !b.location_id);
+  const binsAtCustomer = bins.filter(b => b.customer_location_id || b.customer_id);
+  const binsAtYard = bins.filter(b => !b.customer_location_id && !b.customer_id && b.location_id);
+  const binsUnknown = bins.filter(b => !b.customer_location_id && !b.customer_id && !b.location_id);
 
   return (
     <main className="max-w-7xl mx-auto p-8 bg-white text-gray-900 min-h-screen">
@@ -172,45 +224,28 @@ export default function HomePage() {
             ) : (
               <div className="space-y-3">
                 {binsAtCustomer.length > 0 && (
-                  <div className="border rounded-lg overflow-hidden">
-                    <div className="px-4 py-2 bg-blue-50 border-b">
-                      <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">At Customer Site</span>
-                    </div>
-                    {binsAtCustomer.map(bin => (
-                      <div key={bin.id} className="flex items-center justify-between px-4 py-2.5 border-b last:border-0 hover:bg-gray-50">
-                        <span className="font-medium text-sm">{bin.serial_number}</span>
-                        <span className="text-xs text-gray-500">{binLocation(bin).label}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <BinSection
+                    bins={binsAtCustomer}
+                    headerClass="bg-blue-50"
+                    labelClass="text-blue-700"
+                    label="At Customer Site"
+                  />
                 )}
-
                 {binsAtYard.length > 0 && (
-                  <div className="border rounded-lg overflow-hidden">
-                    <div className="px-4 py-2 bg-green-50 border-b">
-                      <span className="text-xs font-semibold text-green-700 uppercase tracking-wide">At Yard</span>
-                    </div>
-                    {binsAtYard.map(bin => (
-                      <div key={bin.id} className="flex items-center justify-between px-4 py-2.5 border-b last:border-0 hover:bg-gray-50">
-                        <span className="font-medium text-sm">{bin.serial_number}</span>
-                        <span className="text-xs text-gray-500">{binLocation(bin).label}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <BinSection
+                    bins={binsAtYard}
+                    headerClass="bg-green-50"
+                    labelClass="text-green-700"
+                    label="At Yard"
+                  />
                 )}
-
                 {binsUnknown.length > 0 && (
-                  <div className="border rounded-lg overflow-hidden">
-                    <div className="px-4 py-2 bg-gray-50 border-b">
-                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Unknown Location</span>
-                    </div>
-                    {binsUnknown.map(bin => (
-                      <div key={bin.id} className="flex items-center justify-between px-4 py-2.5 border-b last:border-0 hover:bg-gray-50">
-                        <span className="font-medium text-sm">{bin.serial_number}</span>
-                        <span className="text-xs text-gray-400">—</span>
-                      </div>
-                    ))}
-                  </div>
+                  <BinSection
+                    bins={binsUnknown}
+                    headerClass="bg-gray-50"
+                    labelClass="text-gray-500"
+                    label="Unknown Location"
+                  />
                 )}
               </div>
             )}
