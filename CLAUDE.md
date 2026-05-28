@@ -306,6 +306,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 - Two-panel layout: Project Costs (2/3 width) + Bin Locations (1/3 width)
 - Cost panel: current month, active projects only, sorted by cost descending. Links to `/cost`
 - Bins panel: grouped by At Customer Site / At Yard / Unknown Location. Links to `/bins`
+  - Each section shows a count badge and the specific location name per bin
+  - Sections with more than 10 bins show the first 10 with a "Show N more" / "Show less" toggle
 
 ### /projects
 - Create new projects with name, location, start date, end date, status
@@ -335,6 +337,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 - Customer site dropdown appears after customer is selected; shows site address/contact as preview
 - Bin movements: optionally add bins to a trip with action = `dropoff` or `pickup`
   - Auto-suggests action based on bin's current location (yard → dropoff, customer → pickup)
+  - **Conflict validation** enforced — see *Bin Movement Validation* section below
 - Trip list shows: vehicle, customer (+ site name), dropoff, net weight breakdown per load, requester, status badge, date
 - Drag-to-reorder: open trips can be reordered by dragging the grip handle; order persisted via `trip_order`
 - Actions per trip:
@@ -393,6 +396,63 @@ Bin pick up - {serial_number}    ← repeated per bin with action=pickup
 ```
 > When a `customer_location_id` is set on the trip, the site's address and contacts take precedence over the customer-level fields. The pickup name is formatted as `Customer Name (Site Name)`.
 
+
+---
+
+## Bin Movement Validation
+
+This validation applies wherever bins are added to a trip — both the admin app (`/trips`) and the `trips-records` driver app.
+
+### Rule
+
+A bin's current location determines which action is valid:
+
+| Bin current location | Allowed action | Blocked action |
+|---|---|---|
+| At customer (`customer_location_id` or `customer_id` set) | `pickup` | `dropoff` — already at site |
+| At yard (`location_id` set) | `dropoff` | `pickup` — not at a customer |
+| Unknown (all null) | Either | — |
+
+### Implementation (three layers)
+
+**1. Auto-suggest on bin select** — when a bin is chosen from the dropdown, set the action automatically:
+- `location_id` set → `dropoff`
+- `customer_id` or `customer_location_id` set → `pickup`
+- All null → keep current selection
+
+**2. Disable conflicting option** — in the action `<select>`, disable the option that would conflict:
+- Bin at customer → `<option value="dropoff" disabled>`
+- Bin at yard → `<option value="pickup" disabled>`
+
+**3. Block on submit** — before writing to the DB, check all bin rows. If any conflict exists, surface a specific error per bin and abort:
+
+```typescript
+function binActionConflict(bin, action) {
+  const atCustomer = !!(bin.customer_id || bin.customer_location_id);
+  const atYard     = !!(bin.location_id);
+  if (atCustomer && action === 'dropoff')
+    return `${bin.serial_number} is already at a customer site — select Pick up instead.`;
+  if (atYard && action === 'pickup')
+    return `${bin.serial_number} is at the yard — select Drop off instead.`;
+  return null;
+}
+```
+
+### Data required
+
+Fetch these fields on the `bins` table to run the check — no joins needed:
+
+```sql
+SELECT id, serial_number, customer_id, customer_location_id, location_id FROM bins
+```
+
+### Bin location update on trip complete
+
+When a trip is marked complete, bin locations are updated automatically:
+- `pickup` bins → `location_id` = trip's `dropoff_id`, `customer_id` and `customer_location_id` cleared
+- `dropoff` bins → `customer_location_id` = trip's `customer_location_id`, `location_id` and `customer_id` cleared
+
+The driver app should not update bin locations directly — this is handled by the admin app on complete.
 
 ---
 
