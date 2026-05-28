@@ -435,6 +435,8 @@ export default function TripsPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this trip?')) return;
+    // Unlink weigh_bridge records before deleting — FK prevents cascade delete, but records should be preserved
+    await supabase.from('weigh_bridge').update({ trip_id: null }).eq('trip_id', id);
     const { error } = await supabase.from('trips').delete().eq('id', id);
     if (!error) fetchTrips();
     else alert('Error deleting trip: ' + error.message);

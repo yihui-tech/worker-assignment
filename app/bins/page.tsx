@@ -234,6 +234,9 @@ export default function BinsPage() {
     }
     if (bin.customers) return { label: 'At customer', value: bin.customers.name, color: 'text-blue-700 bg-blue-50' };
     if (bin.locations) return { label: 'At yard', value: bin.locations.name, color: 'text-green-700 bg-green-50' };
+    // Fallback to raw IDs when FK joins return null (e.g. missing FK constraint in DB)
+    if (bin.customer_location_id || bin.customer_id) return { label: 'At customer', value: '—', color: 'text-blue-700 bg-blue-50' };
+    if (bin.location_id) return { label: 'At yard', value: '—', color: 'text-green-700 bg-green-50' };
     return { label: 'Unknown', value: '—', color: 'text-gray-500 bg-gray-50' };
   };
 
