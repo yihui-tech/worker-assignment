@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import Image from 'next/image';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { FolderKanban, Truck } from 'lucide-react';
+import { createBrowserClient } from '@supabase/ssr';
 
 const projectsLinks = [
   { href: '/projects', label: 'Projects' },
@@ -21,6 +22,18 @@ const tripsLinks = [
 
 export default function Nav() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    router.push('/login');
+    router.refresh();
+  };
 
   const navLink = (href: string, label: string) => (
     <Link
@@ -55,6 +68,15 @@ export default function Nav() {
         <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Trips</span>
       </div>
       {tripsLinks.map(l => navLink(l.href, l.label))}
+
+      <div className="ml-auto">
+        <button
+          onClick={handleSignOut}
+          className="text-sm text-gray-400 hover:text-gray-700 font-medium transition-colors"
+        >
+          Sign out
+        </button>
+      </div>
     </nav>
   );
 }
